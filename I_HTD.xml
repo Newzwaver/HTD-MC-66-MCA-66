@@ -1,0 +1,698 @@
+<?xml version="1.0"?>
+<implementation>
+  <settings>
+    <protocol>raw</protocol>
+  </settings>
+  <functions>
+  local socket = require("socket")
+  local HTD_cmd_start = "0x02"
+  local HTD_cmd_end = "7F"
+  local buffer = ""
+  local bufferString = ""
+  local zone_ID = {}
+  local cmdString = {}
+  local zonedev = ""
+  local BAUD_RATE = "38400"
+  local IP_PORT = "10006"
+  
+  function lug_startup(lul_device)
+    local HTD_SID = "urn:micasaverde-com:serviceId:HTD1"
+    local lul_ID = luup.variable_get(HTD_SID, "ZoneIds", lul_device)
+    if (lul_ID == nil) then
+      lul_ID = "01,02,03,04,05,06"
+      luup.variable_set(HTD_SID, "ZoneIds", lul_ID, lul_device)
+    end
+ 
+    local lul_prefix = luup.variable_get(HTD_SID, "UrtsiId", lul_device)
+    if (lul_prefix == nil) then
+      lul_prefix = "01"
+      luup.variable_set(HTD_SID, "UrtsiId", lul_prefix, lul_device)
+    end
+ 
+    luup.log("Zone ID is " .. lul_ID .. " prefix is " .. lul_prefix)
+  
+    if (luup.io.is_connected(lul_device) == false) then
+      luup.log('No port for HTD', 1)
+      luup.task('Choose the Serial Port for the URTSI',2,'HTD Interface', -1)
+      return false
+    end
+ 
+    child_devices = luup.chdev.start(lul_device);
+    for i = 1,8 do
+      s = string.format("%02d", i)
+      if (string.find (lul_ID,s) ~= nil) then
+        luup.log("Adding audio zone " .. s)
+        luup.chdev.append(lul_device, child_devices, s, "Audio Zone #" .. s, "urn:schemas-micasaverde-com:device:HTDZone:1", "D_HTDZones.xml", "", "", false)
+      end
+    end
+
+	luup.chdev.sync(lul_device, child_devices)
+
+    -- Find and store child devices
+    for k, v in pairs(luup.devices) do
+      if v.device_num_parent == luup.device then
+        t = tonumber(v.id)
+        zone_ID[t] = k
+        luup.log("HTD Audio Zone " .. t .. " is device ID " .. k)
+      end
+    end
+  end
+    
+  function makeCommand(cmdString)
+    local chksum = #cmdString
+    local cmdstr = ""
+    for i = 1,#cmdString do
+      cmdstr = cmdstr .. string.char(cmdString[i])
+      chksum = chksum + cmdString[i]
+    end
+    return cmdstr .. string.char((chksum % 0x80), 0xF7)
+  end
+  
+  function sendCommand(command)
+	local cmd = command
+      local startTime, endTime
+      startTime = socket.gettime()
+      if (luup.io.write(cmd) == false) then
+        luup.log("Cannot send command " .. command .. " communications error", 1)
+        luup.set_failure(true)
+        return false
+      end
+      endTime = socket.gettime()
+      luup.log("Request returned in " .. math.floor((endTime - startTime) * 1000) .. "ms")
+
+      return true
+  end
+
+  </functions>
+
+  <incoming>
+    <lua>
+	local data = string.format('%02X', string.byte(lul_data))
+	-- Added to query system for status
+		local keyPad = luup.attr_get('altid', lul_device)
+		local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		local chksums = 0x02 + 0x00 + KeyString + 0x08 + 0x00
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x08, 0x00, chksums }
+		sendCommand(makeCommand(cmdString))	
+		-- testing only
+
+		-- Build full hex strings
+    if (data == chksums) then
+	  bufferString = buffer .. " " .. data
+      luup.log("Received full buffer from controller via serial " .. bufferString) 
+    elseif (data == HTD_cmd_start) then
+      buffer = data
+    else
+      buffer = buffer .. " " .. data
+	end
+	
+	-- Generate array from buffer
+	if (bufferString ~= nil) then
+	  Array = {}
+	  local x = 1
+	  for i in string.gmatch(bufferString, "%S+") do
+	    Array[x] = i
+	    x = x + 1
+	  end
+	end
+	
+	-- Parse hex strings
+	if (#Array == 16) then  
+	  if (Array[13] == "01") then
+
+	    -- Convert to decimal, range 0..100, and return volume status
+	    value = tonumber(Array[9], 16) * 2
+        zonedev = zone_ID[tonumber(Array[3]) + 1]
+        luup.variable_set("urn:micasaverde-com:serviceId:Volume1", "Volume", value, zonedev)
+        luup.log("Volume for zone " .. tonumber(Array[3]) + 1 .. " is " .. (value or "Not Available"))
+        bufferString = ""
+	  end
+	elseif ((#Array == 23) or (#Array == 24)) then  
+
+	  -- Return state status
+	  if ((Array[#Array - 8] == "23") or (Array[#Array - 8] == "DC" )) then
+	    if (Array[#Array - 6] == "01") then
+	      zonedev = zone_ID[tonumber(Array[3]) + 1]
+	      luup.variable_set("urn:micasaverde-com:serviceId:SwitchPower1", "Status", "1", zonedev)
+	      luup.log("Power for zone " .. tonumber(Array[3]) + 1 .. " is " .. (Array[#Array - 6] or "Not Available"))
+          bufferString = ""
+	    elseif (Array[#Array - 6] == "00") then
+	      zonedev = zone_ID[tonumber(Array[3]) + 1]
+	      luup.variable_set("urn:micasaverde-com:serviceId:SwitchPower1", "Status", "0", zonedev)
+	      luup.log("Power for zone " .. tonumber(Array[3]) + 1 .. " is " .. (Array[#Array - 6] or "Not Available"))
+          bufferString = ""
+	    end
+	  end
+	elseif (#Array == 15) then  
+
+	  -- Return source status
+	  if (Array[13] == "05") then
+	  	value = string.format('%02X', Array[10])
+	    zonedev = zone_ID[tonumber(Array[3]) + 1]
+		luup.variable_set("urn:micasaverde-com:serviceId:InputSelection1", "Input", value, zonedev)
+	    luup.log("Source for zone " .. tonumber(Array[3]) + 1 .. " is " .. (tonumber(Array[10]) + 1 or "Not Available"))
+        bufferString = ""
+	  end
+
+    -- Display source string
+	elseif (Array[4] == "79") then
+  	  local sourceString = ""
+	  for n = 24,(20 + tonumber(Array[19], 16)) do
+  		sourceString = sourceString .. string.char(tonumber(Array[n], 16))	  		
+	  end
+	  luup.log("Source string is " .. sourceString)
+
+	  -- Determine which zones are set to strings source
+	  for s = 1,6 do
+	    luup.log("GGG1 Zone " .. s .. " is device " .. zone_ID[s])
+		if zone_ID[s] ~= nil then
+		  local input = tonumber(string.format('%02d', luup.variable_get("urn:micasaverde-com:serviceId:InputSelection1", "Input", zone_ID[s])))
+		  local messagesrc = tonumber(string.format('%02d', Array[21]))
+		  if (messagesrc - input) == 10 then
+   			luup.variable_set("urn:micasaverde-com:serviceId:InputSelection1", "Display", sourceString, zone_ID[s])
+            bufferString = ""
+		  end
+		end
+	  end
+      sourceString = ""
+      bufferString = ""
+
+	-- Display keypad messages  
+	elseif ((Array[4] == "71") and (Array[7] == "7F") and (Array[19] ~= "00")) then
+	  local keypadString = ""
+	  zonedev = zone_ID[tonumber(Array[3]) + 1]
+	  for n = 24,37 do
+		keypadString = keypadString .. string.char(tonumber(Array[n], 16))	  		
+      end
+	  luup.log("Keypad string for zone " .. tonumber(Array[3]) + 1 .. " is " .. keypadString)
+	  luup.variable_set("urn:micasaverde-com:serviceId:InputSelection1", "Display", keypadString, zonedev)
+      bufferString = ""
+	  keypadString = ""
+	  Array = {}
+	end
+	
+	</lua>
+  </incoming>
+ 
+  <startup>lug_startup</startup>
+  <actionList>
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+      <name>AllOn</name>
+      <run>
+        -- Power on all zones
+        cmdString = { 0x02, 0x00, 0x01, 0x04, 0x38, 0x3F }
+        sendCommand(makeCommand(cmdString))
+        cmdString = { 0x02, 0x00, 0x01, 0x04, 0x38, 0x3F }
+        sendCommand(makeCommand(cmdString))
+      </run>
+    </action>
+
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+      <name>AllOff</name>
+      <run>
+        -- Power off all zones\x02\x00\x01\x04\x39\x40
+        cmdString = { 0x02, 0x00, 0x01, 0x04, 0x39, 0x40 }
+        sendCommand(makeCommand(cmdString))
+     </run>
+    </action>
+    
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+      <name>RecordMute</name>
+        <run>
+        -- Mute
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	   -- Mute Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x22, 0x29 }
+        sendCommand(makeCommand(cmdString)) 
+	   -- Mute Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x22, 0x2A }
+        sendCommand(makeCommand(cmdString)) 
+        -- Mute Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x22, 0x2B }
+        sendCommand(makeCommand(cmdString))    
+        -- Mute Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x22, 0x2C }
+        sendCommand(makeCommand(cmdString)) 
+        -- Mute Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x22, 0x2D }
+        sendCommand(makeCommand(cmdString)) 
+        -- Mute Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x22, 0x2E }
+        sendCommand(makeCommand(cmdString)) 	
+      </run>
+    </action>
+
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:DiscretePower1</serviceId>
+      <name>On</name>
+      <run>
+		-- Power On Zones
+		local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		-- calculates check sum with variable 
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x20
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x20, chksums }
+		sendCommand(makeCommand(cmdString))
+      </run>
+    </action>
+	<action>
+      <serviceId>urn:micasaverde-com:serviceId:DiscretePower1</serviceId>
+      <name>Off</name>
+      <run>
+		-- Power Off Zones
+		local keyPad = luup.attr_get('altid', lul_device)
+		local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x21
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x21, chksums }
+		sendCommand(makeCommand(cmdString))
+      </run>
+    </action>
+    
+	<action>
+      <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+      <name>Up</name>
+      <run>
+        -- Volume Up
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- Volume Up Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x09, 0x10 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- Volume Up Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x09, 0x11 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- Volume Up Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x09, 0x12 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- Volume Up Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x09, 0x13 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- Volume Up Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x09, 0x14 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- Volume Up Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x09, 0x15 }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+    
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+      <name>Down</name>
+      <run>
+        -- Volume Up
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- Volume Up Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x0A, 0x11 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- Volume Up Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x0A, 0x12 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- Volume Up Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x0A, 0x13 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- Volume Up Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x0A, 0x14 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- Volume Up Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x0A, 0x15 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- Volume Up Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x0A, 0x16 }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+      <name>Mute</name>
+        <run>
+ 		-- Mute Zone On
+		local keyPad = luup.attr_get('altid', lul_device)
+		local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x22
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x22, chksums }
+		sendCommand(makeCommand(cmdString))
+      </run>
+    </action>
+
+	<action>
+      <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+      <name>Input1</name>
+      <run>
+        -- Source 1
+		local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		-- This calculates check sum perfect.
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x03
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x03,  chksums }
+		sendCommand(makeCommand(cmdString))
+		</run>
+		</action>
+		<action>
+      <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+      <name>Input2</name>
+      <run>
+        -- Source 2
+		local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		-- This calculates check sum perfect.
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x04
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x04, chksums }
+		sendCommand(makeCommand(cmdString))
+		</run>
+		</action>
+		<action>
+		<serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+		<name>Input3</name>
+		<run>
+         -- Source 3
+		local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		-- This calculates check sum perfect.
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x05
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x05, chksums }
+		sendCommand(makeCommand(cmdString))
+		</run>
+		</action>
+		<action>
+		<serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+		<name>Input4</name>
+		<run>
+        -- Source 4
+         local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		-- This calculates check sum perfect.
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x06
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x06, chksums }
+		sendCommand(makeCommand(cmdString))        
+		</run>
+		</action>
+		<action>
+		<serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+		<name>Input5</name>
+		<run>
+        -- Source 5
+        local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		-- This calculates check sum perfect.
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x07
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x07, chksums }
+		sendCommand(makeCommand(cmdString))        
+		</run>
+		</action>
+		<action>
+		<serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+		<name>Input6</name>
+        <run>
+        -- Source 6
+        local keyCode = luup.attr_get('altid', lul_device)
+		KeyString = "0x" .. string.format( "%02x", keyCode )
+		-- This calculates check sum perfect.
+		local chksums = 0x02 + 0x00 + KeyString + 0x04 + 0x08
+		-- Send command
+		cmdString = { 0x02, 0x00, KeyString, 0x04, 0x08, chksums }
+		sendCommand(makeCommand(cmdString))
+		</run>
+		</action>
+		<action>
+		<serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+		<name>PartyMode1</name>
+		<run>
+        -- PartyMode 1
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- PartyMode 1 Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x3A, 0x41 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- PartyMode 1 Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x3B, 0x42 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- PartyMode 1 Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x3C, 0x43 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- PartyMode 1 Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x3D, 0x44 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- PartyMode 1 Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x3E, 0x45 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- PartyMode 1 Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x3F, 0x46 }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+      <name>PartyMode2</name>
+      <run>
+        -- PartyMode 2
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- PartyMode 2 of  Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x3A, 0x42 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- PartyMode 2 of  Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x3B, 0x43 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- PartyMode 2 of  Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x3C, 0x44 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- PartyMode 2 of  Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x3D, 0x45 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- PartyMode 2 of  Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x3E, 0x46 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- PartyMode 2 of  Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x3F, 0x47 }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+ 
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+      <name>PartyMode3</name>
+      <run>
+        -- PartyMode 3
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- PartyMode 3 of  Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x3A, 0x43 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- PartyMode 3 of  Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x3B, 0x44 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- PartyMode 3 of  Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x3C, 0x45 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- PartyMode 3 of  Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x3D, 0x46 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- PartyMode 3 of  Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x3E, 0x47 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- PartyMode 3 of  Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x3F, 0x48 }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+ 
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+      <name>PartyMode4</name>
+      <run>
+        -- PartyMode 4
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- PartyMode 4 of  Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x3A, 0x44 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- PartyMode 4 of  Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x3B, 0x45 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- PartyMode 4 of  Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x3C, 0x46 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- PartyMode 4 of  Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x3D, 0x47 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- PartyMode 4 of  Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x3E, 0x48 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- PartyMode 4 of  Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x3F, 0x49 }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+ 
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+      <name>PartyMode5</name>
+      <run>
+        -- PartyMode 5
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- PartyMode 5 of  Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x3A, 0x45 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- PartyMode 5 of  Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x3B, 0x46 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- PartyMode 5 of  Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x3C, 0x47 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- PartyMode 5 of  Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x3D, 0x48 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- PartyMode 5 of  Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0xE3, 0x49 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- PartyMode 5 of  Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x3F, 0x4A }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+ 
+    <action>
+      <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+      <name>PartyMode6</name>
+        <run>
+        -- PartyMode 6
+        local keyPad = luup.attr_get('altid', lul_device)
+        -- Send command
+	if ( keyPad == "01") then
+        -- PartyMode 6 of  Zone 1
+     	cmdString = { 0x02, 0x00, 0x01, 0x04, 0x3A, 0x46 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "02") then
+        -- PartyMode 6 of  Zone 2
+		cmdString = { 0x02, 0x00, 0x02, 0x04, 0x3B, 0x47 }
+        sendCommand(makeCommand(cmdString)) 
+			end
+	if ( keyPad == "03") then
+        -- PartyMode 6 of  Zone 3
+        cmdString = { 0x02, 0x00, 0x03, 0x04, 0x3C, 0x48 }
+        sendCommand(makeCommand(cmdString))    
+	end
+	if ( keyPad == "04") then
+        -- PartyMode 6 of  Zone 4
+        cmdString = { 0x02, 0x00, 0x04, 0x04, 0x3D, 0x49 }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "05") then
+        -- PartyMode 6 of  Zone 5
+        cmdString = { 0x02, 0x00, 0x05, 0x04, 0x3E, 0x4A }
+        sendCommand(makeCommand(cmdString)) 
+	end
+	if ( keyPad == "06") then
+        -- PartyMode 6 of  Zone 6
+        cmdString = { 0x02, 0x00, 0x06, 0x04, 0x3F, 0x4B }
+        sendCommand(makeCommand(cmdString)) 	
+	end
+      </run>
+    </action>
+  </actionList>
+</implementation>

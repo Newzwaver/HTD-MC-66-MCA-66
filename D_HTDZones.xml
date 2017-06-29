@@ -1,0 +1,56 @@
+<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <device>
+    <deviceType>urn:schemas-micasaverde-com:device:HTDZone:1</deviceType>
+    <staticJson>D_HTDZones.json</staticJson>
+    <friendlyName>HTD Audio Zone</friendlyName>
+    <manufacturer>HTD</manufacturer>
+    <manufacturerURL>http://www.HTD.com</manufacturerURL>
+    <modelDescription>HTD Audio Zone</modelDescription>
+    <modelName>HTD</modelName>
+    <modelNumber>1.0</modelNumber>
+    <protocol>raw</protocol>
+   	<ioPort>10006</ioPort> 
+	<handleChildren>1</handleChildren>
+    <serviceList>
+      <service>
+        <serviceType>urn:micasaverde-com:service:DiscretePower:1</serviceType>
+        <serviceId>urn:micasaverde-com:serviceId:DiscretePower1</serviceId>
+        <SCPDURL>S_DiscretePower1.xml</SCPDURL>
+		</service>
+		<service>
+        <serviceType>urn:micasaverde-com:service:SwitchPower:1</serviceType>
+        <serviceId>urn:micasaverde-com:serviceId:SwitchPower1</serviceId>
+        <SCPDURL>S_SwitchPower1.xml</SCPDURL>
+      </service>
+      <service>
+        <serviceType>urn:micasaverde-com:service:InputSelection:1</serviceType>
+        <serviceId>urn:micasaverde-com:serviceId:InputSelection1</serviceId>
+        <SCPDURL>S_InputSelection1.xml</SCPDURL>
+      </service>
+
+      <service>
+        <serviceType>urn:micasaverde-com:service:Volume:1</serviceType>
+        <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+        <SCPDURL>S_Volume1.xml</SCPDURL>
+      </service>
+
+      <service>
+        <serviceType>urn:micasaverde-com:service:MediaNavigation:1</serviceType>
+        <serviceId>urn:micasaverde-com:serviceId:MediaNavigation1</serviceId>
+        <SCPDURL>S_MediaNavigation1.xml</SCPDURL>
+      </service>
+      
+	  <service>
+        <serviceType>urn:schemas-upnp-org:service:RenderingControl:1</serviceType>
+        <serviceId>urn:upnp-org:serviceId:RenderingControl</serviceId>
+        <SCPDURL>S_HTDRenderingControl1.xml</SCPDURL>
+      </service>
+
+    </serviceList>
+  </device>
+</root>

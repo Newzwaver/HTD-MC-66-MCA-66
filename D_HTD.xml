@@ -1,0 +1,36 @@
+<?xml version="1.0"?>
+<root xmlns="urn:schemas-upnp-org:device-1-0">
+  <specVersion>
+    <major>1</major>
+    <minor>0</minor>
+  </specVersion>
+  <device>
+    <deviceType>urn:schemas-micasaverde-com:device:HTDController:1</deviceType>
+    <staticJson>D_HTD.json</staticJson>
+    <friendlyName>HTD Controller</friendlyName>
+    <manufacturer>HTD</manufacturer>
+    <manufacturerURL>http://www.HTD.com</manufacturerURL>
+    <modelDescription>RS485 to HTD </modelDescription>
+    <modelName>GWSL1</modelName>
+    <modelNumber>1.0</modelNumber>
+    <protocol>raw</protocol>
+		<ioPort>10006</ioPort>
+		<commUse>rs485</commUse>
+    <handleChildren>1</handleChildren>
+    <implementationList>
+      <implementationFile>I_HTD.xml</implementationFile>
+    </implementationList>
+    <serviceList>
+      <service>
+        <serviceType>urn:micasaverde-com:service:Misc:1</serviceType>
+        <serviceId>urn:micasaverde-com:serviceId:Misc1</serviceId>
+        <SCPDURL>S_Misc1.xml</SCPDURL>
+      </service>
+   <service>
+        <serviceType>urn:micasaverde-com:service:Volume:1</serviceType>
+        <serviceId>urn:micasaverde-com:serviceId:Volume1</serviceId>
+        <SCPDURL>S_Volume1.xml</SCPDURL>
+      </service>
+</serviceList>
+  </device>
+</root>
